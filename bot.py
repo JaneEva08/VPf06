@@ -109,8 +109,12 @@ async def retrieve_context(user_id: int, query: str, top_k: int = core.RAG_TOP_K
         include=["documents", "distances"],
     )
     docs, dists = core.unpack_query_result(result)
-    logging.info("RAG: найдено %d, расстояния %s", len(docs), [round(d, 3) for d in dists])
-    return core.filter_by_distance(docs, dists)
+    chosen = core.filter_by_distance(docs, dists)
+    logging.info(
+        "RAG: найдено %d, расстояния %s, отобрано %d (порог %.2f)",
+        len(docs), [round(d, 3) for d in dists], len(chosen), core.RAG_MAX_DISTANCE,
+    )
+    return chosen
 
 
 async def answer_with_memory(user_id: int, user_text: str) -> str:
