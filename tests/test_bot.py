@@ -1,0 +1,75 @@
+"""Проверка склейки бота на заглушках (OpenAI и Chroma не вызываются). Нужны aiogram и python-dotenv."""
+import asyncio
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+pytest.importorskip("aiogram")
+pytest.importorskip("openai")
+pytest.importorskip("dotenv")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import bot  # noqa: E402
+import core  # noqa: E402
+
+
+class FakeChat:
+    def __init__(self, content):
+        self.content = content
+        self.calls = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=self.content))])
+
+
+@pytest.fixture(autouse=True)
+def fresh(monkeypatch):
+    monkeypatch.setattr(bot, "short_memory", core.ShortMemory())
+
+
+def use_model(monkeypatch, content, chunks):
+    chat = FakeChat(content)
+    monkeypatch.setattr(bot, "openai_client", SimpleNamespace(chat=SimpleNamespace(completions=chat)))
+    seen = []
+
+    async def fake_retrieve(user_id, query, top_k=5):
+        seen.append(query)
+        return chunks
+
+    monkeypatch.setattr(bot, "retrieve_context", fake_retrieve)
+    return chat, seen
+
+
+def test_answer_uses_context_and_remembers(monkeypatch):
+    chat, _ = use_model(monkeypatch, "В Москве и Санкт-Петербурге", ["Офисы в Москве и СПб"])
+    reply = asyncio.run(bot.answer_with_memory(1, "Где офисы?"))
+    assert reply == "В Москве и Санкт-Петербурге"
+    assert "Офисы в Москве" in chat.calls[0]["messages"][-1]["content"]
+    assert bot.short_memory.history(1)[0]["content"] == "Где офисы?"  # в истории без фрагментов
+    assert "temperature" not in chat.calls[0]
+
+
+def test_followup_query_includes_previous_question(monkeypatch):
+    _, seen = use_model(monkeypatch, "ответ", [])
+    asyncio.run(bot.answer_with_memory(1, "Вы делаете сайты?"))
+    asyncio.run(bot.answer_with_memory(1, "А сроки?"))
+    assert seen == ["Вы делаете сайты?", "Вы делаете сайты?\nА сроки?"]
+
+
+def test_empty_reply_raises_and_history_stays_clean(monkeypatch):
+    use_model(monkeypatch, "", [])
+    with pytest.raises(core.EmptyReplyError):
+        asyncio.run(bot.answer_with_memory(1, "привет"))
+    assert bot.short_memory.history(1) == []
+
+
+def test_remove_user_uploads(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "UPLOADS_DIR", str(tmp_path))
+    d = tmp_path / "7"
+    d.mkdir()
+    (d / "x.txt").write_text("данные")
+    bot.remove_user_uploads(7)
+    assert not d.exists()
+    bot.remove_user_uploads(7)  # повторный вызов не падает
