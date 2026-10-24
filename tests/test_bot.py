@@ -95,3 +95,21 @@ def test_collection_name_depends_on_embed_model(monkeypatch):
     monkeypatch.setattr(bot, "EMBED_PROVIDER", "local")
     b = bot.collection_name()
     assert a != b and a.startswith("long_memory_") and 3 <= len(b) <= 63
+
+
+def test_threshold_is_read_from_dotenv(tmp_path):
+    """Регрессия: core читал RAG_MAX_DISTANCE до load_dotenv(), и значение из .env игнорировалось."""
+    import shutil
+    import subprocess
+
+    root = Path(__file__).resolve().parent.parent
+    for name in ("bot.py", "core.py"):
+        shutil.copy(root / name, tmp_path / name)
+    (tmp_path / ".env").write_text("RAG_MAX_DISTANCE=0.5\n", encoding="utf-8")
+    env = {k: v for k, v in __import__("os").environ.items() if k != "RAG_MAX_DISTANCE"}
+    env.update(BOT_TOKEN="x", OPENAI_API_KEY="x")
+    out = subprocess.run(
+        [sys.executable, "-c", "import bot, core; print(core.RAG_MAX_DISTANCE)"],
+        cwd=tmp_path, env=env, capture_output=True, text=True, check=True,
+    )
+    assert out.stdout.strip() == "0.5"

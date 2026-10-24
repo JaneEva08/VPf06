@@ -21,9 +21,9 @@ from aiogram.types import Message
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
-import core
+load_dotenv()  # до импорта core: он читает RAG_MAX_DISTANCE из окружения при загрузке
 
-load_dotenv()
+import core  # noqa: E402
 
 PERSIST_DIR = "./memory"  # ChromaDB (долгая память)
 UPLOADS_DIR = "./uploads"  # временные файлы: после индексации удаляются
