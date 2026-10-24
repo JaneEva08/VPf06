@@ -4,6 +4,7 @@
 Долгая память — документы (PDF/DOCX/TXT) -> чанки -> эмбеддинги -> ChromaDB на диске.
 """
 import asyncio
+import hashlib
 import logging
 import os
 import shutil
@@ -20,9 +21,9 @@ from aiogram.types import Message
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
-import core
+load_dotenv()  # до импорта core: он читает RAG_MAX_DISTANCE из окружения при загрузке
 
-load_dotenv()
+import core  # noqa: E402
 
 PERSIST_DIR = "./memory"  # ChromaDB (долгая память)
 UPLOADS_DIR = "./uploads"  # временные файлы: после индексации удаляются
@@ -30,7 +31,10 @@ MAX_FILE_BYTES = 20 * 1024 * 1024  # лимит Telegram на скачивани
 EMBED_BATCH = 100  # чанков за один запрос эмбеддингов
 
 CHAT_MODEL = os.getenv("CHAT_MODEL", "gpt-5-mini")
+# Эмбеддинги: "api" — через провайдера (EMBED_MODEL), "local" — локальная модель без API и ключей
+EMBED_PROVIDER = os.getenv("EMBED_PROVIDER", "api").lower()
 EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-small")
+LOCAL_EMBED_MODEL = os.getenv("LOCAL_EMBED_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 # Необязательный лимит ответа. У reasoning-моделей он включает «мысли», поэтому по умолчанию не задан.
 MAX_COMPLETION_TOKENS = int(os.getenv("MAX_COMPLETION_TOKENS", "0")) or None
 
@@ -42,16 +46,38 @@ embed_client: Optional[AsyncOpenAI] = None  # отдельный клиент д
 _user_locks: Dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
+def active_embed_model() -> str:
+    return LOCAL_EMBED_MODEL if EMBED_PROVIDER == "local" else EMBED_MODEL
+
+
+def collection_name() -> str:
+    """Имя коллекции зависит от модели эмбеддингов: у разных моделей разная размерность векторов,
+    и смешивать их в одной коллекции нельзя."""
+    digest = hashlib.md5(f"{EMBED_PROVIDER}:{active_embed_model()}".encode()).hexdigest()[:8]
+    return f"long_memory_{digest}"
+
+
 @lru_cache(maxsize=1)
 def get_collection():
     """Одно подключение к Chroma на весь процесс."""
     import chromadb
 
     client = chromadb.PersistentClient(path=PERSIST_DIR)
-    return client.get_or_create_collection(name="long_memory", metadata={"hnsw:space": "cosine"})
+    return client.get_or_create_collection(name=collection_name(), metadata={"hnsw:space": "cosine"})
+
+
+@lru_cache(maxsize=1)
+def get_local_embedder():
+    """Локальная модель эмбеддингов (fastembed, ONNX). Первый запуск скачивает модель (~220 МБ)."""
+    from fastembed import TextEmbedding
+
+    return TextEmbedding(model_name=LOCAL_EMBED_MODEL)
 
 
 async def embed_texts(texts: List[str]) -> List[List[float]]:
+    if EMBED_PROVIDER == "local":
+        embedder = get_local_embedder()
+        return await asyncio.to_thread(lambda: [list(map(float, v)) for v in embedder.embed(texts)])
     resp = await (embed_client or openai_client).embeddings.create(model=EMBED_MODEL, input=texts)
     return [d.embedding for d in resp.data]
 
@@ -62,6 +88,11 @@ async def embed_chunks(user_id: int, doc_id: str, file_name: str, chunks: List[s
     for i in range(0, len(chunks), EMBED_BATCH):  # батчами, чтобы не упереться в лимиты API
         vectors.extend(await embed_texts(chunks[i : i + EMBED_BATCH]))
     ids = [f"{user_id}:{doc_id}:{i}" for i in range(len(chunks))]
+    # Повторная загрузка файла с тем же именем заменяет старую версию, иначе в выдачу попадают дубли
+    await asyncio.to_thread(
+        get_collection().delete,
+        where={"$and": [{"user_id": str(user_id)}, {"file_name": file_name}]},
+    )
     metadatas = [
         {"user_id": str(user_id), "doc_id": doc_id, "file_name": file_name, "chunk_index": i}
         for i in range(len(chunks))
@@ -83,8 +114,12 @@ async def retrieve_context(user_id: int, query: str, top_k: int = core.RAG_TOP_K
         include=["documents", "distances"],
     )
     docs, dists = core.unpack_query_result(result)
-    logging.info("RAG: найдено %d, расстояния %s", len(docs), [round(d, 3) for d in dists])
-    return core.filter_by_distance(docs, dists)
+    chosen = core.filter_by_distance(docs, dists)
+    logging.info(
+        "RAG: найдено %d, расстояния %s, отобрано %d (порог %.2f)",
+        len(docs), [round(d, 3) for d in dists], len(chosen), core.RAG_MAX_DISTANCE,
+    )
+    return chosen
 
 
 async def answer_with_memory(user_id: int, user_text: str) -> str:
@@ -210,7 +245,7 @@ async def main() -> None:
     bot = Bot(token=bot_token, default=DefaultBotProperties(parse_mode=None))
     dp = Dispatcher()
     dp.include_router(router)
-    logging.info("Бот запущен. Модель: %s, эмбеддинги: %s", CHAT_MODEL, EMBED_MODEL)
+    logging.info("Бот запущен. Модель: %s, эмбеддинги (%s): %s", CHAT_MODEL, EMBED_PROVIDER, active_embed_model())
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 

@@ -73,3 +73,64 @@ def test_remove_user_uploads(tmp_path, monkeypatch):
     bot.remove_user_uploads(7)
     assert not d.exists()
     bot.remove_user_uploads(7)  # повторный вызов не падает
+
+
+def test_local_embeddings_path(monkeypatch):
+    class Vec(list):
+        pass
+
+    class FakeEmbedder:
+        def embed(self, texts):
+            return [Vec([float(len(x)), 1.0]) for x in texts]
+
+    monkeypatch.setattr(bot, "EMBED_PROVIDER", "local")
+    monkeypatch.setattr(bot, "get_local_embedder", lambda: FakeEmbedder())
+    assert asyncio.run(bot.embed_texts(["аб", "абв"])) == [[2.0, 1.0], [3.0, 1.0]]
+
+
+def test_collection_name_depends_on_embed_model(monkeypatch):
+    monkeypatch.setattr(bot, "EMBED_PROVIDER", "api")
+    monkeypatch.setattr(bot, "EMBED_MODEL", "text-embedding-3-small")
+    a = bot.collection_name()
+    monkeypatch.setattr(bot, "EMBED_PROVIDER", "local")
+    b = bot.collection_name()
+    assert a != b and a.startswith("long_memory_") and 3 <= len(b) <= 63
+
+
+def test_threshold_is_read_from_dotenv(tmp_path):
+    """Регрессия: core читал RAG_MAX_DISTANCE до load_dotenv(), и значение из .env игнорировалось."""
+    import shutil
+    import subprocess
+
+    root = Path(__file__).resolve().parent.parent
+    for name in ("bot.py", "core.py"):
+        shutil.copy(root / name, tmp_path / name)
+    (tmp_path / ".env").write_text("RAG_MAX_DISTANCE=0.5\n", encoding="utf-8")
+    env = {k: v for k, v in __import__("os").environ.items() if k != "RAG_MAX_DISTANCE"}
+    env.update(BOT_TOKEN="x", OPENAI_API_KEY="x")
+    out = subprocess.run(
+        [sys.executable, "-c", "import bot, core; print(core.RAG_MAX_DISTANCE)"],
+        cwd=tmp_path, env=env, capture_output=True, text=True, check=True,
+    )
+    assert out.stdout.strip() == "0.5"
+
+
+def test_reupload_replaces_previous_version(monkeypatch):
+    calls = []
+
+    class FakeCollection:
+        def delete(self, where):
+            calls.append(("delete", where))
+
+        def upsert(self, **kwargs):
+            calls.append(("upsert", len(kwargs["documents"])))
+
+    async def fake_embed(texts):
+        return [[0.0, 1.0] for _ in texts]
+
+    monkeypatch.setattr(bot, "get_collection", lambda: FakeCollection())
+    monkeypatch.setattr(bot, "embed_texts", fake_embed)
+    count = asyncio.run(bot.embed_chunks(5, "doc1", "company.txt", ["а", "б"]))
+    assert count == 2
+    assert calls[0] == ("delete", {"$and": [{"user_id": "5"}, {"file_name": "company.txt"}]})
+    assert calls[1] == ("upsert", 2)
