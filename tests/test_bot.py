@@ -113,3 +113,24 @@ def test_threshold_is_read_from_dotenv(tmp_path):
         cwd=tmp_path, env=env, capture_output=True, text=True, check=True,
     )
     assert out.stdout.strip() == "0.5"
+
+
+def test_reupload_replaces_previous_version(monkeypatch):
+    calls = []
+
+    class FakeCollection:
+        def delete(self, where):
+            calls.append(("delete", where))
+
+        def upsert(self, **kwargs):
+            calls.append(("upsert", len(kwargs["documents"])))
+
+    async def fake_embed(texts):
+        return [[0.0, 1.0] for _ in texts]
+
+    monkeypatch.setattr(bot, "get_collection", lambda: FakeCollection())
+    monkeypatch.setattr(bot, "embed_texts", fake_embed)
+    count = asyncio.run(bot.embed_chunks(5, "doc1", "company.txt", ["а", "б"]))
+    assert count == 2
+    assert calls[0] == ("delete", {"$and": [{"user_id": "5"}, {"file_name": "company.txt"}]})
+    assert calls[1] == ("upsert", 2)

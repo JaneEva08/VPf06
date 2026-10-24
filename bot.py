@@ -88,6 +88,11 @@ async def embed_chunks(user_id: int, doc_id: str, file_name: str, chunks: List[s
     for i in range(0, len(chunks), EMBED_BATCH):  # батчами, чтобы не упереться в лимиты API
         vectors.extend(await embed_texts(chunks[i : i + EMBED_BATCH]))
     ids = [f"{user_id}:{doc_id}:{i}" for i in range(len(chunks))]
+    # Повторная загрузка файла с тем же именем заменяет старую версию, иначе в выдачу попадают дубли
+    await asyncio.to_thread(
+        get_collection().delete,
+        where={"$and": [{"user_id": str(user_id)}, {"file_name": file_name}]},
+    )
     metadatas = [
         {"user_id": str(user_id), "doc_id": doc_id, "file_name": file_name, "chunk_index": i}
         for i in range(len(chunks))
