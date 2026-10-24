@@ -1,5 +1,13 @@
 .env
 memory/
 uploads/
+results/
 __pycache__/
+*.pyc
 .venv/
+venv/
+*.db
+*.sqlite3
+*.pdf
+exports/
+.pytest_cache/
