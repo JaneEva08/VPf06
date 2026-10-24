@@ -73,3 +73,25 @@ def test_remove_user_uploads(tmp_path, monkeypatch):
     bot.remove_user_uploads(7)
     assert not d.exists()
     bot.remove_user_uploads(7)  # повторный вызов не падает
+
+
+def test_local_embeddings_path(monkeypatch):
+    class Vec(list):
+        pass
+
+    class FakeEmbedder:
+        def embed(self, texts):
+            return [Vec([float(len(x)), 1.0]) for x in texts]
+
+    monkeypatch.setattr(bot, "EMBED_PROVIDER", "local")
+    monkeypatch.setattr(bot, "get_local_embedder", lambda: FakeEmbedder())
+    assert asyncio.run(bot.embed_texts(["аб", "абв"])) == [[2.0, 1.0], [3.0, 1.0]]
+
+
+def test_collection_name_depends_on_embed_model(monkeypatch):
+    monkeypatch.setattr(bot, "EMBED_PROVIDER", "api")
+    monkeypatch.setattr(bot, "EMBED_MODEL", "text-embedding-3-small")
+    a = bot.collection_name()
+    monkeypatch.setattr(bot, "EMBED_PROVIDER", "local")
+    b = bot.collection_name()
+    assert a != b and a.startswith("long_memory_") and 3 <= len(b) <= 63

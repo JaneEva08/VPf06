@@ -32,6 +32,15 @@ async def main() -> None:
     except Exception as e:  # noqa: BLE001
         print(f"чат {chat_model}: ОШИБКА {type(e).__name__}: {e}")
 
+    if os.getenv("EMBED_PROVIDER", "api").lower() == "local":
+        from fastembed import TextEmbedding
+
+        model = os.getenv("LOCAL_EMBED_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+        print(f"эмбеддинги (локально) {model}: загрузка модели, при первом запуске это несколько минут...")
+        vecs = list(TextEmbedding(model_name=model).embed(["Мы делаем сайты", "Офисы в Москве"]))
+        print(f"эмбеддинги (локально): OK, размерность {len(vecs[0])}, векторов {len(vecs)}")
+        return
+
     try:
         e = await embed.embeddings.create(model=embed_model, input=["Мы делаем сайты", "Офисы в Москве"])
         print(f"эмбеддинги {embed_model}: OK, размерность {len(e.data[0].embedding)}, векторов {len(e.data)}")

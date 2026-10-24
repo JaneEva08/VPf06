@@ -13,7 +13,7 @@
 1. Пользователь присылает файл, бот скачивает его в `./uploads/<user_id>/`.
 2. Текст извлекается (`pypdf` для PDF, `python-docx` для DOCX, чтение для TXT).
 3. Текст режется на пересекающиеся чанки (~500 символов, перекрытие 50).
-4. OpenAI Embeddings (`text-embedding-3-small`) превращает чанки в векторы.
+4. Эмбеддинги превращают чанки в векторы: через API провайдера (`EMBED_PROVIDER=api`, `text-embedding-3-small`) или локальной моделью (`EMBED_PROVIDER=local`, `paraphrase-multilingual-MiniLM-L12-v2`, библиотека `fastembed`).
 5. Векторы + метаданные (`user_id`, `doc_id`, `file_name`, `chunk_index`) сохраняются в Chroma (cosine).
 
 ### Логика запроса
@@ -24,7 +24,7 @@
 Если в документах ответа нет, модель опирается на историю диалога и общие знания и не выдумывает факты о документе.
 
 ## Библиотеки
-`aiogram 3` (Telegram), `openai` (чат и эмбеддинги), `chromadb` (векторная БД), `pypdf`, `python-docx`, `python-dotenv`.
+`aiogram 3` (Telegram), `openai` (чат, при `EMBED_PROVIDER=api` и эмбеддинги), `fastembed` (локальные эмбеддинги), `chromadb` (векторная БД), `pypdf`, `python-docx`, `python-dotenv`.
 
 ## Запуск
 ```bash

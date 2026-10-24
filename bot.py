@@ -4,6 +4,7 @@
 Долгая память — документы (PDF/DOCX/TXT) -> чанки -> эмбеддинги -> ChromaDB на диске.
 """
 import asyncio
+import hashlib
 import logging
 import os
 import shutil
@@ -30,7 +31,10 @@ MAX_FILE_BYTES = 20 * 1024 * 1024  # лимит Telegram на скачивани
 EMBED_BATCH = 100  # чанков за один запрос эмбеддингов
 
 CHAT_MODEL = os.getenv("CHAT_MODEL", "gpt-5-mini")
+# Эмбеддинги: "api" — через провайдера (EMBED_MODEL), "local" — локальная модель без API и ключей
+EMBED_PROVIDER = os.getenv("EMBED_PROVIDER", "api").lower()
 EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-small")
+LOCAL_EMBED_MODEL = os.getenv("LOCAL_EMBED_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 # Необязательный лимит ответа. У reasoning-моделей он включает «мысли», поэтому по умолчанию не задан.
 MAX_COMPLETION_TOKENS = int(os.getenv("MAX_COMPLETION_TOKENS", "0")) or None
 
@@ -42,16 +46,38 @@ embed_client: Optional[AsyncOpenAI] = None  # отдельный клиент д
 _user_locks: Dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
+def active_embed_model() -> str:
+    return LOCAL_EMBED_MODEL if EMBED_PROVIDER == "local" else EMBED_MODEL
+
+
+def collection_name() -> str:
+    """Имя коллекции зависит от модели эмбеддингов: у разных моделей разная размерность векторов,
+    и смешивать их в одной коллекции нельзя."""
+    digest = hashlib.md5(f"{EMBED_PROVIDER}:{active_embed_model()}".encode()).hexdigest()[:8]
+    return f"long_memory_{digest}"
+
+
 @lru_cache(maxsize=1)
 def get_collection():
     """Одно подключение к Chroma на весь процесс."""
     import chromadb
 
     client = chromadb.PersistentClient(path=PERSIST_DIR)
-    return client.get_or_create_collection(name="long_memory", metadata={"hnsw:space": "cosine"})
+    return client.get_or_create_collection(name=collection_name(), metadata={"hnsw:space": "cosine"})
+
+
+@lru_cache(maxsize=1)
+def get_local_embedder():
+    """Локальная модель эмбеддингов (fastembed, ONNX). Первый запуск скачивает модель (~220 МБ)."""
+    from fastembed import TextEmbedding
+
+    return TextEmbedding(model_name=LOCAL_EMBED_MODEL)
 
 
 async def embed_texts(texts: List[str]) -> List[List[float]]:
+    if EMBED_PROVIDER == "local":
+        embedder = get_local_embedder()
+        return await asyncio.to_thread(lambda: [list(map(float, v)) for v in embedder.embed(texts)])
     resp = await (embed_client or openai_client).embeddings.create(model=EMBED_MODEL, input=texts)
     return [d.embedding for d in resp.data]
 
@@ -210,7 +236,7 @@ async def main() -> None:
     bot = Bot(token=bot_token, default=DefaultBotProperties(parse_mode=None))
     dp = Dispatcher()
     dp.include_router(router)
-    logging.info("Бот запущен. Модель: %s, эмбеддинги: %s", CHAT_MODEL, EMBED_MODEL)
+    logging.info("Бот запущен. Модель: %s, эмбеддинги (%s): %s", CHAT_MODEL, EMBED_PROVIDER, active_embed_model())
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 
